@@ -1,4 +1,4 @@
-# Live Captioner
+# Jaid Shaikh Live Caption
 
 Live captions and a timestamped transcript for any video playing in your browser.
 Speech recognition (Whisper) runs on your own computer; no audio is uploaded.

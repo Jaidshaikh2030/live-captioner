@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Live Captioner</title>
+<meta name="description" content="Free live captions and transcripts for any video playing in your browser. Runs privately on your computer with Whisper. No sign-up, no uploads.">
+<meta property="og:title" content="Live Captioner">
+<meta property="og:description" content="Free live captions and transcripts for any video playing in your browser. Runs privately on your computer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one column — control bar on top, live caption strip, scrolling transcript log */
+  :root {
+    --bg: #f3f4f7; --panel: #ffffff; --fg: #15171c; --muted: #5d6270;
+    --line: #dde0e7; --accent: #2f5bd8; --live: #d63c3c; --ok: #1f8a4c;
+    --sans: "IBM Plex Sans", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1116; --panel: #171a21; --fg: #e8eaf0; --muted: #9298a6;
+      --line: #2a2e38; --accent: #7a9bff; --live: #ff6b6b; --ok: #4fc483; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 var(--sans); }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px max(16px, env(safe-area-inset-left)) 48px; display: grid; gap: 18px; }
+  h1 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { margin: 4px 0 0; color: var(--muted); max-width: 62ch; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+  label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  select { font: 14px var(--sans); padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 0; }
+  button { font: 500 14px var(--sans); padding: 9px 14px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop { background: var(--live); border-color: var(--live); color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .status { display: flex; align-items: center; gap: 8px; font: 13px var(--mono); color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+  .dot.on { background: var(--live); animation: pulse 1.4s infinite; }
+  .dot.ready { background: var(--ok); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .dot.on { animation: none; } }
+  .meter { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .1s; }
+  .caption { min-height: 64px; font-size: 20px; line-height: 1.4; padding: 14px 16px; border-radius: 10px; background: var(--fg); color: var(--bg); }
+  .caption.empty { opacity: .55; font-size: 15px; }
+  .caption .prev { opacity: .5; }
+  .caption .cursor { display: inline-block; width: .5em; height: 1em; margin-left: 2px; vertical-align: -0.12em; background: currentColor; opacity: .5; animation: pulse 1s infinite; }
+  .log { display: grid; gap: 2px; max-height: 52vh; overflow-y: auto; }
+  .line { display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  .line time { font: 12px var(--mono); color: var(--muted); padding-top: 3px; font-variant-numeric: tabular-nums; }
+  .line p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .hint { font-size: 13px; color: var(--muted); margin: 0; }
+  .hint b { color: var(--fg); font-weight: 500; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .head h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Live Captioner</h1>
+    <p class="sub">Transcribes the audio of a video playing in another browser tab, or anything your microphone hears. Everything runs on your computer. No audio is uploaded.</p>
+  </header>
+
+  <section class="panel">
+    <div class="row">
+      <label>Source
+        <select id="source">
+          <option value="tab">Browser tab audio (Whisper)</option>
+          <option value="device">Mac sound via BlackHole (no sharing bar)</option>
+          <option value="mic">Microphone (browser speech)</option>
+        </select>
+      </label>
+      <label id="deviceWrap" hidden>Audio input
+        <select id="device"><option value="">Click Start to list devices</option></select>
+      </label>
+      <label id="modelWrap">Model
+        <select id="model">
+          <option value="Xenova/whisper-tiny.en">Tiny, English, fastest</option>
+          <option value="Xenova/whisper-base.en" selected>Base, English, better</option>
+          <option value="Xenova/whisper-small.en">Small, English, best for accents</option>
+          <option value="Xenova/whisper-base">Base, any language</option>
+          <option value="Xenova/whisper-small">Small, any language, slow</option>
+        </select>
+      </label>
+      <label>Mode
+        <select id="mode">
+          <option value="live" selected>Word by word</option>
+          <option value="chunk">Chunks (lighter on CPU)</option>
+        </select>
+      </label>
+      <label>Max line
+        <select id="chunk">
+          <option value="5">5 s</option>
+          <option value="8" selected>8 s</option>
+          <option value="12">12 s</option>
+        </select>
+      </label>
+      <button id="start" class="primary">Start</button>
+    </div>
+    <div class="status"><span class="dot" id="dot"></span><span id="status">Idle</span></div>
+    <div class="meter"><i id="level"></i></div>
+    <p class="hint" id="hint">Click <b>Start</b>, choose the tab with your video, and turn on <b>Share tab audio</b> in the dialog. The first run downloads the model (about 40–250 MB), then it is cached.</p>
+  </section>
+
+  <div class="caption empty" id="caption">Live captions appear here.</div>
+
+  <section class="panel">
+    <div class="head">
+      <h2>Transcript</h2>
+      <div class="row">
+        <button id="copy">Copy</button>
+        <button id="save">Save .txt</button>
+        <button id="clear">Clear</button>
+      </div>
+    </div>
+    <div class="log" id="log"></div>
+  </section>
+</div>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const ui = { start: $("start"), source: $("source"), model: $("model"), chunk: $("chunk"),
+  mode: $("mode"), device: $("device"), deviceWrap: $("deviceWrap"), status: $("status"), dot: $("dot"), level: $("level"), caption: $("caption"), log: $("log"),
+  hint: $("hint"), modelWrap: $("modelWrap") };
+
+let running = false, stream = null, audioCtx = null, proc = null, recog = null, liveTimer = null;
+let transcriber = null, loadedModel = null, t0 = 0;
+// "pending" is the line currently being spoken; it is committed to the transcript on a pause or at max length
+let pending = [], pendingLen = 0, silentSamples = 0, windowId = 0;
+let finals = [], busy = false, lastFinal = "";
+const SR16 = 16000, SILENCE = 0.006;
+const lines = [];
+
+function setStatus(text, state = "") {
+  ui.status.textContent = text;
+  ui.dot.className = "dot " + state;
+}
+const stamp = () => {
+  const s = Math.floor((Date.now() - t0) / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
+function addLine(text) {
+  text = text.trim();
+  if (!text) return;
+  const ts = stamp();
+  lines.push(`[${ts}] ${text}`);
+  const row = document.createElement("div");
+  row.className = "line";
+  row.innerHTML = "<time></time><p></p>";
+  row.firstChild.textContent = ts;
+  row.lastChild.textContent = text;
+  const atBottom = ui.log.scrollHeight - ui.log.scrollTop - ui.log.clientHeight < 40;
+  ui.log.append(row);
+  if (atBottom) ui.log.scrollTop = ui.log.scrollHeight;
+  lastFinal = text;
+  showCaption("");
+}
+// Caption = last finished line (dimmed) + the line being spoken, with a cursor while live
+function showCaption(live, cursor = false) {
+  ui.caption.classList.remove("empty");
+  ui.caption.textContent = "";
+  if (lastFinal) {
+    const prev = document.createElement("span");
+    prev.className = "prev";
+    prev.textContent = lastFinal + " ";
+    ui.caption.append(prev);
+  }
+  ui.caption.append(live);
+  if (cursor) { const c = document.createElement("span"); c.className = "cursor"; ui.caption.append(c); }
+}
+
+const HINTS = {
+  device: "Plays your Mac's sound into the captioner through <b>BlackHole</b>, a free virtual audio cable, so Chrome shows no sharing bar. One-time setup is in the instructions. Pick <b>BlackHole 2ch</b> under Audio input.",
+  tab: "Click <b>Start</b>, choose the tab with your video, and turn on <b>Share tab audio</b> in the dialog. Chrome shows a sharing bar on that tab while this runs.",
+  mic: "Uses Chrome's built-in speech recognition on your microphone. Play the video out loud through your speakers, not headphones. Works on phones too.",
+};
+ui.source.onchange = () => {
+  const src = ui.source.value, whisper = src !== "mic";
+  ui.modelWrap.hidden = !whisper;
+  ui.chunk.parentElement.hidden = !whisper;
+  ui.mode.parentElement.hidden = !whisper;
+  ui.deviceWrap.hidden = src !== "device";
+  ui.hint.innerHTML = HINTS[src];
+  try { localStorage.setItem("lc-source", src); } catch {}
+};
+try { const s = localStorage.getItem("lc-source"); if (s && HINTS[s]) ui.source.value = s; } catch {}
+ui.source.onchange();
+ui.device.onchange = () => { try { localStorage.setItem("lc-device", ui.device.value); } catch {} };
+
+// Fill the input list; names only appear after the first microphone permission
+async function listDevices() {
+  const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+  let saved = ""; try { saved = localStorage.getItem("lc-device") || ""; } catch {}
+  const prev = ui.device.value || saved;
+  ui.device.innerHTML = "";
+  for (const d of inputs) {
+    const o = document.createElement("option");
+    o.value = d.deviceId; o.textContent = d.label || "Audio input";
+    ui.device.append(o);
+  }
+  const bh = inputs.find(d => /blackhole/i.test(d.label));
+  ui.device.value = inputs.some(d => d.deviceId === prev) ? prev : (bh?.deviceId || inputs[0]?.deviceId || "");
+  return { bh, inputs };
+}
+
+ui.start.onclick = () => running ? stop() : start();
+
+async function getDeviceTrack() {
+  // Ask once so device names are visible, then open the chosen one with no voice processing
+  if (!ui.device.value || !(await navigator.mediaDevices.enumerateDevices()).some(d => d.label)) {
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tmp.getTracks().forEach(t => t.stop());
+  }
+  const { bh } = await listDevices();
+  if (!bh) setStatus("BlackHole not found. Install it (see instructions), or pick another input.");
+  stream = await navigator.mediaDevices.getUserMedia({ audio: {
+    deviceId: ui.device.value ? { exact: ui.device.value } : undefined,
+    echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+  } });
+  return stream.getAudioTracks()[0];
+}
+
+async function start() {
+  t0 = Date.now();
+  if (ui.source.value === "mic") return startMic();
+  let track;
+  if (ui.source.value === "device") {
+    try { track = await getDeviceTrack(); }
+    catch (e) { setStatus("Couldn't open the audio input: " + e.message); return; }
+  } else {
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true, audio: true,
+        surfaceSwitching: "exclude",   // no "Share this tab instead" bar on other tabs
+        selfBrowserSurface: "exclude", // don't offer the captioner's own tab
+        preferCurrentTab: false,
+      });
+    } catch (e) {
+      setStatus("Sharing cancelled");
+      return;
+    }
+    track = stream.getAudioTracks()[0];
+    if (!track) {
+      stream.getTracks().forEach(t => t.stop());
+      setStatus("No audio shared. Pick a browser tab and turn on “Share tab audio”.");
+      return;
+    }
+  }
+  stream.getVideoTracks().forEach(t => t.stop()); // we only need the sound
+  track.onended = stop;
+  running = true;
+  ui.start.textContent = "Stop"; ui.start.className = "stop";
+
+  // Load Whisper (in parallel with capturing, so no audio is lost)
+  loadModel();
+
+  audioCtx = new AudioContext();
+  const src = audioCtx.createMediaStreamSource(new MediaStream([track]));
+  proc = audioCtx.createScriptProcessor(2048, 1, 1);
+  const mute = audioCtx.createGain(); mute.gain.value = 0;
+  src.connect(proc); proc.connect(mute); mute.connect(audioCtx.destination);
+  const rate = audioCtx.sampleRate;
+  proc.onaudioprocess = e => {
+    const block = downsample(e.inputBuffer.getChannelData(0), rate, SR16);
+    const level = rms(block);
+    ui.level.style.width = Math.min(100, level * 400) + "%";
+    pending.push(block); pendingLen += block.length;
+    silentSamples = level < SILENCE ? silentSamples + block.length : 0;
+    const maxLen = SR16 * Number(ui.chunk.value);
+    // Commit on a natural pause (>0.5 s quiet after 1.5 s+ of audio) or at max length
+    if (pendingLen >= maxLen || (pendingLen >= SR16 * 1.5 && silentSamples >= SR16 * 0.5)) commit();
+    // Drop leading silence so a quiet stretch doesn't build up a window
+    else if (pendingLen === silentSamples && pendingLen > SR16) { pending = []; pendingLen = 0; }
+  };
+  if (ui.mode.value === "live") liveTimer = setInterval(liveUpdate, 400);
+}
+
+function rms(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * a[i]; return Math.sqrt(s / (a.length || 1)); }
+function joined() {
+  const out = new Float32Array(pendingLen);
+  let o = 0; for (const b of pending) { out.set(b, o); o += b.length; }
+  return out;
+}
+
+function downsample(data, from, to) {
+  if (from === to) return new Float32Array(data);
+  const ratio = from / to, out = new Float32Array(Math.floor(data.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const s = Math.floor(i * ratio), e = Math.min(data.length, Math.floor((i + 1) * ratio));
+    let acc = 0; for (let j = s; j < e; j++) acc += data[j];
+    out[i] = acc / Math.max(1, e - s);
+  }
+  return out;
+}
+
+function commit() {
+  const audio = joined();
+  pending = []; pendingLen = 0; silentSamples = 0; windowId++;
+  if (rms(audio) < SILENCE * 0.7) return; // silence: skip, avoids made-up text
+  finals.push(audio);
+  if (finals.length > 3) finals.shift(); // falling behind: drop oldest
+  pump();
+}
+
+function clean(text) {
+  return (text || "").replace(/\[[^\]]*\]|\((music|applause|laughs?)\)/gi, "").trim();
+}
+async function run(audio) {
+  const opts = loadedModel.endsWith(".en") ? {} : { task: "transcribe" };
+  return clean((await transcriber(audio, opts)).text);
+}
+
+// Re-transcribe the line in progress so words appear as they are spoken
+async function liveUpdate() {
+  if (busy || !transcriber || finals.length || pendingLen < SR16 * 0.6) return;
+  if (pendingLen === silentSamples) return;
+  busy = true;
+  const id = windowId;
+  try {
+    const text = await run(joined());
+    if (id === windowId && running) showCaption(text, true);
+  } catch (e) { console.error(e); }
+  busy = false;
+  pump();
+}
+
+async function loadModel() {
+  const name = ui.model.value;
+  if (transcriber && loadedModel === name) { setStatus("Listening", "on"); return; }
+  setStatus("Loading model…");
+  const { pipeline, env } = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2");
+  env.allowLocalModels = false;
+  const device = navigator.gpu ? "webgpu" : "wasm";
+  const progress = p => {
+    if (p.status === "progress" && p.total) setStatus(`Downloading ${p.file}: ${Math.round(p.loaded / p.total * 100)}%`);
+  };
+  try {
+    transcriber = await pipeline("automatic-speech-recognition", name, { device, dtype: device === "webgpu" ? "fp32" : "q8", progress_callback: progress });
+  } catch (e) {
+    console.warn("WebGPU failed, using WASM", e);
+    transcriber = await pipeline("automatic-speech-recognition", name, { device: "wasm", dtype: "q8", progress_callback: progress });
+  }
+  loadedModel = name;
+  if (running) setStatus(`Listening (${device})`, "on");
+  pump();
+}
+
+async function pump() {
+  if (busy || !transcriber || !finals.length) return;
+  busy = true;
+  try {
+    const text = await run(finals.shift());
+    if (text) addLine(text);
+  } catch (e) { console.error(e); setStatus("Transcription error: " + e.message); }
+  busy = false;
+  pump();
+}
+
+function startMic() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { setStatus("This browser has no speech recognition. Use Chrome or Edge."); return; }
+  recog = new SR();
+  recog.continuous = true; recog.interimResults = true;
+  recog.lang = navigator.language || "en-US";
+  recog.onresult = e => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) addLine(r[0].transcript); else showCaption(r[0].transcript, true);
+    }
+  };
+  recog.onerror = e => setStatus("Microphone error: " + e.error);
+  recog.onend = () => { if (running) recog.start(); }; // Chrome stops after silence; restart
+  recog.start();
+  running = true;
+  ui.start.textContent = "Stop"; ui.start.className = "stop";
+  setStatus("Listening (microphone)", "on");
+}
+
+function stop() {
+  running = false;
+  if (recog) { recog.onend = null; recog.stop(); recog = null; }
+  clearInterval(liveTimer); liveTimer = null;
+  if (pendingLen > SR16) commit();
+  proc?.disconnect(); audioCtx?.close(); proc = audioCtx = null;
+  stream?.getTracks().forEach(t => t.stop()); stream = null;
+  ui.level.style.width = "0";
+  ui.start.textContent = "Start"; ui.start.className = "primary";
+  setStatus(finals.length || busy ? "Stopped, finishing last chunk" : "Stopped", transcriber ? "ready" : "");
+}
+
+$("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(lines.join("\n")); setStatus("Transcript copied", "ready"); }
+  catch { setStatus("Copy failed. Select the text and copy it yourself."); }
+};
+$("save").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/plain" }));
+  a.download = `transcript-${new Date().toISOString().slice(0, 16).replace(":", "")}.txt`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("clear").onclick = () => { lines.length = 0; lastFinal = ""; ui.log.innerHTML = ""; ui.caption.textContent = "Live captions appear here."; ui.caption.classList.add("empty"); };
+</script>
+</body>
+</html>
